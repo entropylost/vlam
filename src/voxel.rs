@@ -203,19 +203,12 @@ impl VoxelTracer {
         BlockType::write(&self.diff.view(0), dispatch_id().xy(), **block);
     }
     #[tracked]
-    pub fn trace_to(&self, start: Expr<Vec2<f32>>, end: Expr<Vec2<f32>>) -> Expr<Fluence> {
-        let delta = end - start;
-        let length = delta.length();
-        self.trace(start, delta / length, length)
-    }
-    #[tracked]
     pub fn trace(
         &self,
         start: Expr<Vec2<f32>>,
         ray_dir: Expr<Vec2<f32>>,
-        length: Expr<f32>,
+        ray_interval: Expr<Vec2<f32>>,
     ) -> Expr<Fluence> {
-        let start = start + Vec2::new(0.001, 0.001);
         let inv_dir = (ray_dir + f32::EPSILON).recip();
 
         let interval = aabb_intersect(
@@ -224,9 +217,9 @@ impl VoxelTracer {
             Vec2::splat(0.1).expr(),
             self.size.expr().cast_f32() - Vec2::splat(0.1).expr(),
         );
-        let start_t = keter::max(interval.x, 0.0);
+        let start_t = keter::max(interval.x, ray_interval.x);
         let ray_start = start + start_t * ray_dir;
-        let end_t = keter::min(interval.y, length) - start_t;
+        let end_t = keter::min(interval.y, ray_interval.y) - start_t;
         if end_t <= 0.01 {
             Fluence::empty().expr()
         } else {
