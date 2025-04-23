@@ -1,0 +1,8 @@
+[package]
+name = "vlam"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+keter = { path = "../sefirot/keter", features = ["glam", "trace"] }
+keter_testbed = { path = "../sefirot/testbed", features = ["video"] }
