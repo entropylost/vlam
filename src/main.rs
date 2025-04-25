@@ -1,5 +1,8 @@
-use std::f32::consts::TAU;
+#![feature(more_float_constants)]
 
+use std::f32::consts::{PHI, TAU};
+
+use analytic::{AnalyticTracer, Object};
 use keter::{
     lang::types::vector::{Vec2, Vec3, Vec4},
     prelude::*,
@@ -9,6 +12,7 @@ use scene::{Brush, Scene};
 use utils::{luma, pcg3df};
 use voxel::VoxelTracer;
 
+mod analytic;
 mod scene;
 mod utils;
 mod voxel;
@@ -180,6 +184,7 @@ fn cascade_colors() -> [Vec3<f32>; 6] {
 }
 
 const DISPLAY_SIZE: u32 = 1024;
+const MAX_ITERS: u32 = 1000;
 
 fn main() {
     let app = App::new("Vlam", [DISPLAY_SIZE; 2])
@@ -187,7 +192,27 @@ fn main() {
         .agx()
         .init();
 
-    let world = VoxelTracer::new(Vec2::splat(DISPLAY_SIZE));
+    let world = AnalyticTracer::new(&[
+        Object {
+            center: Vec2::new(3.0 * DISPLAY_SIZE as f32 / 4.0, DISPLAY_SIZE as f32 / 2.0),
+            radius: 5.0,
+            refraction_index: 1.0,
+            color: Color::new(Vec3::splat(20.0), Vec3::splat(2.0)),
+        },
+        Object {
+            center: Vec2::new(DISPLAY_SIZE as f32 / 2.0, DISPLAY_SIZE as f32 / 2.0),
+            radius: 100.0,
+            refraction_index: 1.5,
+            color: Color::new(Vec3::splat(0.0), Vec3::splat(0.0)),
+        },
+        Object {
+            center: Vec2::new(DISPLAY_SIZE as f32 / 4.0, DISPLAY_SIZE as f32 / 2.0),
+            radius: 50.0,
+            refraction_index: 1.5,
+            color: Color::new(Vec3::splat(0.0), Vec3::splat(0.0)),
+        },
+    ]);
+    // VoxelTracer::new(Vec2::splat(DISPLAY_SIZE));
 
     let [storage, next_storage] = [(); 2].map(|()| CascadeStorage {
         data: DEVICE.create_buffer_from_fn((DISPLAY_SIZE * DISPLAY_SIZE * 4 * 6) as usize, |_| 1.0),
@@ -201,9 +226,9 @@ fn main() {
     let display =
         DEVICE.create_tex2d::<Vec3<f32>>(PixelStorage::Float4, DISPLAY_SIZE, DISPLAY_SIZE, 1);
 
-    let compute_diff = DEVICE.create_kernel::<fn()>(&track!(|| {
-        world.compute_diff();
-    }));
+    // let compute_diff = DEVICE.create_kernel::<fn()>(&track!(|| {
+    //     world.compute_diff();
+    // }));
     let copy_storage = DEVICE.create_kernel::<fn()>(&track!(|| {
         let index = dispatch_id().x;
         storage
@@ -218,10 +243,10 @@ fn main() {
     let trace_simple_kernel = DEVICE.create_kernel::<fn(u32)>(&track!(|t| {
         let pixel = dispatch_id().xy();
         let pos = pixel.cast_f32() + 0.5;
-        let max_iters = 100;
-        let angle = (pcg3df(pixel.extend(35)).x + t.cast_f32() / max_iters as f32) * TAU;
+
+        let angle = (pcg3df(pixel.extend(35)).x + (t.cast_f32() * PHI) % 1.0) * TAU;
         let dir = angle.direction();
-        let radiance = world.trace(pos, dir, Vec2::expr(0.0, 9999.0)).radiance;
+        let radiance = world.trace(pos, dir, 9999.0.expr()).fluence.radiance;
         display.write(pixel, display.read(pixel) + radiance);
     }));
     let trace_kernel = DEVICE.create_kernel::<fn(u32)>(&track!(|t| {
@@ -259,20 +284,33 @@ fn main() {
             * TAU;
         let dir = angle.direction();
 
-        let radiance = Radiance::splat(0.0).var();
-        for i in (0..storage.num_cascades).rev() {
-            let fluence = world.trace(
+        let orig_pos = pos;
+        let mut fluences = vec![];
+        let mut pos = pos;
+        let mut dir = dir;
+
+        for i in (0..storage.num_cascades) {
+            let traced = world.trace(
                 pos,
                 dir,
-                2.0 * if i == 0 {
-                    Vec2::expr(0.0, 1.0)
+                (2.0 * if i == 0 {
+                    1.0
                 } else {
-                    (Vec2::expr(1, 4) << ((i - 1) * storage.angular_scale)).cast_f32()
-                },
+                    (3 << ((i - 1) * storage.angular_scale)) as f32
+                })
+                .expr(),
             );
-            *radiance = fluence.over_radiance(**radiance);
+            pos = traced.final_pos;
+            dir = traced.final_dir;
+            fluences.push(traced.fluence);
+        }
+
+        let mut radiance = Radiance::splat(0.0).expr();
+
+        for i in (0..storage.num_cascades).rev() {
+            radiance = fluences[i as usize].over_radiance(radiance);
             let index = index >> (storage.angular_scale * (storage.num_cascades - 1 - i));
-            next_storage.add_bilinear(i.expr(), pos, index, luma(**radiance) / bias);
+            next_storage.add_bilinear(i.expr(), orig_pos, index, luma(radiance) / bias);
         }
 
         display.write(pixel, display.read(pixel) + radiance / bias);
@@ -305,6 +343,7 @@ fn main() {
         );
     }));
 
+    /*
     let rect_brush =
         DEVICE.create_kernel::<fn(Vec2<f32>, Vec2<f32>, Color)>(&track!(|center, size, color| {
             let pos = dispatch_id().xy();
@@ -320,7 +359,7 @@ fn main() {
             }
         }));
 
-    let scene = Scene::pinhole(0);
+    let scene = Scene::sunflower4();
 
     for draw in scene.draws {
         match draw.brush {
@@ -342,10 +381,15 @@ fn main() {
             }
         }
     }
+    */
 
     let mut iterations = 0;
 
+    let mut cpos = Vec2::splat(-f32::INFINITY);
+    let mut display_cascades = false;
+
     app.run(|rt| {
+        /*
         let brushes = [
             (
                 MouseButton::Middle,
@@ -372,18 +416,27 @@ fn main() {
                     .copy_from(&vec![1.0; next_storage.data.len()]);
             }
         }
+        */
 
-        if iterations < 100 {
-            compute_diff.dispatch_blocking([DISPLAY_SIZE / 8, DISPLAY_SIZE / 8, 1]);
+        if iterations < MAX_ITERS {
+            // compute_diff.dispatch_blocking([DISPLAY_SIZE / 8, DISPLAY_SIZE / 8, 1]);
             trace_kernel.dispatch(rt.dispatch_size(), &iterations);
             iterations += 1;
             copy_storage.dispatch([storage.data.len() as u32, 1, 1]);
+            if iterations == MAX_ITERS {
+                println!("Done");
+            }
         }
 
         draw_kernel.dispatch(rt.dispatch_size(), &iterations);
 
-        if rt.key_down(KeyCode::KeyQ) {
-            draw_rc_overlay.dispatch(rt.dispatch_size(), &rt.cursor_position, &10.0);
+        if rt.key_pressed(KeyCode::KeyQ) {
+            display_cascades ^= true;
+            cpos = rt.cursor_position;
+        }
+
+        if display_cascades {
+            draw_rc_overlay.dispatch(rt.dispatch_size(), &cpos, &10.0);
         }
         if rt.key_down(KeyCode::KeyW) {
             for i in 4..storage.num_cascades {

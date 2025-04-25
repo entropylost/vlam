@@ -68,4 +68,32 @@ impl Scene {
         }
         Self { draws }
     }
+    pub fn sunflower4() -> Self {
+        let spacing = 30.0;
+        let center = Vec2::splat(1024.0 / 2.0);
+        let mut draws = vec![];
+        for i in 1..100 {
+            let r = spacing * (i as f32).sqrt();
+            let angle = i as f32 * 137.508_f32.to_radians();
+            let pos = center + angle.direction() * r;
+
+            let brightness = (1.0 - r / 150.0).max(0.0);
+            let color = Oklch::new(brightness, 0.15, angle.to_degrees());
+            let color = LinSrgb::from_color(color);
+
+            draws.push(Draw {
+                brush: Brush::Circle(10.0),
+                center: pos,
+                color: Color::new(
+                    Vec3::new(
+                        5.0 * color.red.max(0.0),
+                        5.0 * color.green.max(0.0),
+                        5.0 * color.blue.max(0.0),
+                    ),
+                    Vec3::splat(0.7),
+                ),
+            });
+        }
+        Self { draws }
+    }
 }
